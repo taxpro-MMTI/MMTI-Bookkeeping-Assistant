@@ -1,16 +1,31 @@
 
 import React, { useState, useEffect } from 'react';
+import { User } from 'firebase/auth';
 import { FileWithPreview, ProcessingStatus, ParsedResult, ReconciliationReport } from './types';
 import FileUploader from './components/FileUploader';
 import ResultSection from './components/ResultSection';
 import { processSingleStatement } from './services/geminiService';
 import { parseGeminiResponse } from './utils/responseParser';
 import { fileToBase64, base64ToFile } from './utils/fileHelpers';
-import { Shield, Loader2, CheckCircle2, AlertCircle, FileText } from 'lucide-react';
+import { Shield, Loader2, CheckCircle2, AlertCircle, FileText, LogOut, Lock, Mail, Key } from 'lucide-react';
+import { auth, loginWithEmail, logout, updateUserProfile, db, handleFirestoreError, OperationType } from './firebase';
+import { onAuthStateChanged } from 'firebase/auth';
+import { setDoc, doc } from 'firebase/firestore';
 
 const COA_STORAGE_KEY = 'auto_bookkeeper_coa';
+const ADMIN_EMAIL = 'taxpro@managemytaxes.com';
 
 function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  // Login Form State
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [isAuthProcessing, setIsAuthProcessing] = useState(false);
+
   const [statements, setStatements] = useState<FileWithPreview[]>([]);
   const [coa, setCoa] = useState<FileWithPreview[]>([]); 
   const [status, setStatus] = useState<ProcessingStatus>('idle');
@@ -18,6 +33,37 @@ function App() {
   const [result, setResult] = useState<ParsedResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [coaLoaded, setCoaLoaded] = useState(false);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      setIsAuthLoading(true);
+      if (currentUser) {
+        setUser(currentUser);
+        const isUserAdmin = currentUser.email === ADMIN_EMAIL;
+        setIsAdmin(isUserAdmin);
+        await updateUserProfile(currentUser);
+      } else {
+        setUser(null);
+        setIsAdmin(false);
+      }
+      setIsAuthLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  const handleAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    setIsAuthProcessing(true);
+    try {
+      await loginWithEmail(email, password);
+    } catch (err: any) {
+      setAuthError(err.message || "Authentication failed.");
+    } finally {
+      setIsAuthProcessing(false);
+    }
+  };
 
   useEffect(() => {
     const saved = localStorage.getItem(COA_STORAGE_KEY);
@@ -70,34 +116,27 @@ function App() {
         const rawText = await processSingleStatement(statements[i], coaFile);
         const parsed = parseGeminiResponse(rawText, statements[i].file.name);
 
-        // Merge Business Name (from first successful extraction)
         if (parsed.businessName && !masterResult.businessName) {
           masterResult.businessName = parsed.businessName;
         }
 
-        // Merge CSV Data
         if (parsed.csvData.length > 0) {
           if (masterCsvRows.length === 0) {
-            masterCsvRows = parsed.csvData; // Include headers from first
+            masterCsvRows = parsed.csvData;
           } else {
-            masterCsvRows = [...masterCsvRows, ...parsed.csvData.slice(1)]; // Skip headers
+            masterCsvRows = [...masterCsvRows, ...parsed.csvData.slice(1)];
           }
         }
 
-        // Merge Issues
         if (parsed.issues && parsed.issues !== "No issues detected.") {
           masterIssues += `\n--- [${statements[i].file.name}] ---\n${parsed.issues}\n`;
         }
 
-        // Collect Checklist & Sources (unique)
         masterResult.checklist = Array.from(new Set([...masterResult.checklist, ...parsed.checklist]));
         masterResult.sources = Array.from(new Set([...(masterResult.sources || []), ...(parsed.sources || [])]));
-        
-        // Collect Reconciliation Reports
         masterResult.reconciliationReports.push(...parsed.reconciliationReports);
       }
 
-      // Finalize CSV Raw from masterCsvRows
       masterResult.csvData = masterCsvRows;
       masterResult.csvRaw = masterCsvRows.map(row => row.map(cell => `"${(cell || "").replace(/"/g, '""')}"`).join(",")).join("\n");
       masterResult.issues = masterIssues.trim() || "No issues detected.";
@@ -119,6 +158,72 @@ function App() {
     setError(null);
   };
 
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+        <Loader2 className="w-12 h-12 animate-spin text-[#0e4e78]" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 px-4">
+        <div className="max-w-md w-full bg-white p-10 rounded-3xl shadow-2xl border border-slate-100">
+          <div className="bg-[#0e4e78] w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-lg">
+            <Shield className="w-8 h-8 text-white" />
+          </div>
+          <h1 className="text-2xl font-extrabold text-slate-900 mb-2 text-center tracking-tight">
+            Secure Login
+          </h1>
+          <p className="text-slate-500 mb-8 text-center text-sm">
+            Enter your credentials to access the assistant
+          </p>
+          
+          <form onSubmit={handleAuth} className="space-y-4">
+            <div className="relative">
+              <Mail className="absolute left-3 top-3 w-5 h-5 text-slate-400" />
+              <input
+                type="email"
+                placeholder="Email Address"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-[#0e4e78] outline-none transition-all"
+              />
+            </div>
+            <div className="relative">
+              <Key className="absolute left-3 top-3 w-5 h-5 text-slate-400" />
+              <input
+                type="password"
+                placeholder="Password"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-[#0e4e78] outline-none transition-all"
+              />
+            </div>
+            
+            {authError && (
+              <div className="p-3 bg-red-50 border border-red-100 rounded-lg text-red-600 text-xs flex items-start">
+                <AlertCircle className="w-4 h-4 mr-2 flex-shrink-0 mt-0.5" />
+                {authError}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={isAuthProcessing}
+              className="w-full py-3 bg-[#0e4e78] hover:bg-[#0a3a5a] text-white rounded-xl font-bold transition-all flex items-center justify-center space-x-2 disabled:opacity-50"
+            >
+              {isAuthProcessing ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Sign In'}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-20">
       <header className="bg-[#0e4e78] shadow-md sticky top-0 z-20">
@@ -127,8 +232,19 @@ function App() {
             <Shield className="w-8 h-8 text-white fill-white/10" strokeWidth={1.5} />
             <h1 className="text-2xl font-bold text-white tracking-tight">MMTI Bookkeeping Assistant</h1>
           </div>
-          <div className="hidden md:block text-blue-100 text-sm font-medium bg-white/10 px-3 py-1 rounded-full">
-            Gemini 3.1 Pro Sequential Engine
+          <div className="flex items-center space-x-6">
+            <div className="hidden md:flex items-center space-x-3 bg-white/10 px-4 py-2 rounded-xl border border-white/20">
+              <div className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center text-white font-bold text-xs">
+                {user.email?.charAt(0).toUpperCase()}
+              </div>
+              <div className="text-left">
+                <p className="text-xs text-blue-100 font-bold uppercase tracking-wider leading-none mb-1">Authenticated</p>
+                <p className="text-sm text-white font-medium leading-none">{user.email}</p>
+              </div>
+            </div>
+            <button onClick={logout} className="text-white/70 hover:text-white transition-colors p-2 rounded-lg hover:bg-white/10" title="Sign Out">
+              <LogOut className="w-6 h-6" />
+            </button>
           </div>
         </div>
       </header>
@@ -199,3 +315,5 @@ function App() {
 }
 
 export default App;
+
+

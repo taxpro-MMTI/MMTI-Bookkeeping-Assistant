@@ -3,7 +3,7 @@ import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import { fileToBase64, readExcelAsText, readFileAsText } from "../utils/fileHelpers";
 import { FileWithPreview } from "../types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY || process.env.API_KEY });
 
 const BASE_PROMPT = `
 Begin with a concise checklist (3-7 bullets) of what you will do.
