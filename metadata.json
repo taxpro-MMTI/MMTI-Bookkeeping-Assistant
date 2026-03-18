@@ -1,0 +1,5 @@
+{
+  "name": "3.1 - MMTI Bookkeeping Assistant ",
+  "description": "An intelligent bookkeeping assistant that processes bank statements, categorizes transactions, and prepares tax-ready CSV exports using Gemini.",
+  "requestFramePermissions": []
+}
